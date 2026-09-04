@@ -20,8 +20,8 @@ fi
 
 echo "### Install ngrok ###"
 
-wget -q https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-386.zip
-unzip ngrok-stable-linux-386.zip
+wget -q https://bin.ngrok.com/ngrok-v3-stable-linux-amd64.tgz
+tar xzf ngrok-v3-stable-linux-amd64.tgz
 chmod +x ./ngrok
 
 echo "### Update user: $USER password ###"
