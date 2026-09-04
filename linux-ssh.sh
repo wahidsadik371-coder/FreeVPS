@@ -20,6 +20,12 @@ if ! command -v ttyd >/dev/null; then
 fi
 command -v ttyd >/dev/null || { echo "ttyd install failed"; exit 3; }
 
+# The Ubuntu ttyd package auto-starts its own systemd service on :7681 that
+# serves a system login prompt. Disable it so OUR ttyd (auth + direct bash
+# shell) owns the port.
+sudo systemctl disable --now ttyd >/dev/null 2>&1 || true
+sudo pkill -f "ttyd .*login" 2>/dev/null || true
+
 echo "### Install ngrok v3 ###"
 wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
 tar xzf ngrok-v3-stable-linux-amd64.tgz
@@ -29,7 +35,14 @@ chmod +x ./ngrok
 echo "### Start web terminal (ttyd) ###"
 nohup ttyd -W -c "jarvis:${LINUX_USER_PASSWORD}" bash >/tmp/ttyd.log 2>&1 &
 sleep 2
-curl -s -o /dev/null http://127.0.0.1:7681 || { echo "ttyd not listening"; cat /tmp/ttyd.log; exit 5; }
+# Our ttyd enforces basic auth, so an unauthenticated request MUST return 401.
+# A 200 means some other server still owns the port (e.g. the packaged service).
+HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7681 || echo 000)
+if [[ "$HTTP_CODE" != "401" ]]; then
+  echo "expected 401 from our auth-protected ttyd, got $HTTP_CODE"
+  cat /tmp/ttyd.log
+  exit 5
+fi
 
 echo "### Start ngrok HTTP tunnel ###"
 ./ngrok authtoken "${NGROK_AUTH_TOKEN:-}"
@@ -69,8 +82,15 @@ SHA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/re
 if [[ -n "$SHA" ]]; then
   PAYLOAD=$(echo "$PAYLOAD" | jq --arg s "$SHA" '. + {sha: $s}')
 fi
-curl -s -X PUT \
-  -H "Authorization: token $GITHUB_TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  -d "$PAYLOAD" \
-  "https://api.github.com/repos/$REPO/contents/tunnel.txt" | jq -r '.content.path // .message'
+PUT_OK=""
+for i in 1 2 3; do
+  RESP=$(curl -s -X PUT \
+    -H "Authorization: token $GITHUB_TOKEN" \
+    -H "Accept: application/vnd.github+json" \
+    -d "$PAYLOAD" \
+    "https://api.github.com/repos/$REPO/contents/tunnel.txt")
+  echo "tunnel.txt PUT attempt $i: $(echo "$RESP" | head -c 200)"
+  if echo "$RESP" | jq -e '.content.path' >/dev/null 2>&1; then PUT_OK=1; break; fi
+  sleep 5
+done
+[[ -n "$PUT_OK" ]] || { echo "FAILED to publish tunnel.txt"; exit 7; }
