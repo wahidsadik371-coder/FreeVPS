@@ -15,15 +15,19 @@ sudo apt-get install -y -qq tmate
 command -v tmate >/dev/null || { echo "tmate install failed"; exit 3; }
 
 echo "### Start tmate session ###"
-tmate new-session -d -s jarvis-vm
-tmate wait-tmate-ready 2>/dev/null || true
-sleep 5
+tmate -S /tmp/tmate.sock new-session -d
+tmate -S /tmp/tmate.sock wait tmate-ready 2>/dev/null || true
 
 echo "### tmate messages ###"
-tmate show-messages
+tmate -S /tmp/tmate.sock show-messages
 
-SSH_LINE=$(tmate show-messages | grep "ssh session:" | awk '{print $3}' | head -1)
-WEB_LINE=$(tmate show-messages | grep "web session:" | awk '{print $3}' | head -1)
+SSH_LINE=""
+for i in $(seq 1 12); do
+  SSH_LINE=$(tmate -S /tmp/tmate.sock show-messages | grep "ssh session:" | awk '{print $3}' | head -1)
+  [[ -n "$SSH_LINE" ]] && break
+  sleep 5
+done
+WEB_LINE=$(tmate -S /tmp/tmate.sock show-messages | grep "web session:" | awk '{print $3}' | head -1)
 
 if [[ -z "$SSH_LINE" ]]; then
   echo "no tmate ssh line found"
