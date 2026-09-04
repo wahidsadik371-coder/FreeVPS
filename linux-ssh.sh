@@ -1,58 +1,70 @@
-#linux-run.sh — temp VM via tmate (no account, no card, no ngrok)
+#linux-run.sh — temp VM: web terminal (ttyd) via free ngrok HTTP tunnel
 #!/bin/bash
-# Publishes the tmate SSH line to tunnel.txt in the repo via GITHUB_TOKEN
+# ngrok free allows HTTP endpoints without a card (TCP requires one).
+# ttyd runs a bash terminal on :7681, ngrok exposes it over HTTPS.
 
 set -u
 
-if [[ -z "${GITHUB_TOKEN:-}" || -z "${REPO:-}" ]]; then
-  echo "GITHUB_TOKEN/REPO env missing"
+if [[ -z "${GITHUB_TOKEN:-}" || -z "${REPO:-}" || -z "${LINUX_USER_PASSWORD:-}" ]]; then
+  echo "required env missing (GITHUB_TOKEN/REPO/LINUX_USER_PASSWORD)"
   exit 2
 fi
 
-echo "### Install tmate ###"
-sudo apt-get update -qq
-sudo apt-get install -y -qq tmate
-command -v tmate >/dev/null || { echo "tmate install failed"; exit 3; }
+echo "### Install ttyd ###"
+if ! command -v ttyd >/dev/null; then
+  sudo apt-get install -y -qq ttyd 2>/dev/null || true
+  if ! command -v ttyd >/dev/null; then
+    curl -sL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -o ttyd
+    chmod +x ttyd && sudo mv ttyd /usr/local/bin/ttyd
+  fi
+fi
+command -v ttyd >/dev/null || { echo "ttyd install failed"; exit 3; }
 
-echo "### Start tmate session ###"
-tmate -S /tmp/tmate.sock new-session -d
-tmate -S /tmp/tmate.sock wait tmate-ready 2>/dev/null || true
+echo "### Install ngrok v3 ###"
+wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+tar xzf ngrok-v3-stable-linux-amd64.tgz
+chmod +x ./ngrok
+[[ -x ./ngrok ]] || { echo "ngrok install failed"; exit 4; }
 
-echo "### tmate messages ###"
-tmate -S /tmp/tmate.sock show-messages
+echo "### Start web terminal (ttyd) ###"
+nohup ttyd -W -c "jarvis:${LINUX_USER_PASSWORD}" bash >/tmp/ttyd.log 2>&1 &
+sleep 2
+curl -s -o /dev/null http://127.0.0.1:7681 || { echo "ttyd not listening"; cat /tmp/ttyd.log; exit 5; }
 
-SSH_LINE=""
-for i in $(seq 1 12); do
-  SSH_LINE=$(tmate -S /tmp/tmate.sock show-messages | grep "ssh session:" | awk '{print $3}' | head -1)
-  [[ -n "$SSH_LINE" ]] && break
+echo "### Start ngrok HTTP tunnel ###"
+./ngrok authtoken "${NGROK_AUTH_TOKEN:-}"
+nohup ./ngrok http 7681 --log .ngrok.log >/dev/null 2>&1 &
+sleep 10
+
+PUBLIC_URL=""
+for i in $(seq 1 10); do
+  PUBLIC_URL=$(curl -s http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[0].public_url // empty' 2>/dev/null)
+  [[ "$PUBLIC_URL" == https://* ]] && break
   sleep 5
 done
-WEB_LINE=$(tmate -S /tmp/tmate.sock show-messages | grep "web session:" | awk '{print $3}' | head -1)
 
-if [[ -z "$SSH_LINE" ]]; then
-  echo "no tmate ssh line found"
-  tmate show-messages
-  exit 5
+if [[ -z "$PUBLIC_URL" ]]; then
+  echo "no ngrok public url"
+  tail -5 .ngrok.log 2>/dev/null
+  exit 6
 fi
 
 echo ""
 echo "=========================================="
-echo "To connect: tmate show-messages said: $SSH_LINE"
-echo "Web terminal: $WEB_LINE"
+echo "Web terminal: $PUBLIC_URL"
+echo "Login: jarvis / \$LINUX_USER_PASSWORD"
 echo "=========================================="
 
-echo "::notice title=Temp VM ready::ssh $SSH_LINE"
+echo "::notice title=Temp VM ready::Web terminal $PUBLIC_URL (login jarvis)"
 {
-  echo "## Temp VM connection"
+  echo "## Temp VM — web terminal"
   echo ""
   echo '```'
-  echo "ssh $SSH_LINE"
-  echo "Web terminal: $WEB_LINE"
+  echo "$PUBLIC_URL"
   echo '```'
 } >> "$GITHUB_STEP_SUMMARY"
 
-SSH_CMD="ssh $SSH_LINE"
-PAYLOAD=$(jq -n --arg c "$(printf '%s | web: %s' "$SSH_CMD" "${WEB_LINE:-none}" | base64 -w0)" '{message: "vm address", content: $c}')
+PAYLOAD=$(jq -n --arg c "$(printf '%s' "$PUBLIC_URL" | base64 -w0)" '{message: "vm web terminal url", content: $c}')
 SHA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/$REPO/contents/tunnel.txt" | jq -r '.sha // empty')
 if [[ -n "$SHA" ]]; then
   PAYLOAD=$(echo "$PAYLOAD" | jq --arg s "$SHA" '. + {sha: $s}')
