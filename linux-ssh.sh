@@ -32,30 +32,43 @@ echo "### Start ngrok proxy for 22 port ###"
 
 rm -f .ngrok.log
 ./ngrok authtoken "$NGROK_AUTH_TOKEN"
-./ngrok tcp 22 --log ".ngrok.log" --log-format "json" &
+./ngrok tcp 22 --log ".ngrok.log" &
 
 sleep 15
-HAS_ERRORS=$(grep "command failed" < .ngrok.log)
 
-if [[ -z "$HAS_ERRORS" ]]; then
-  echo ""
-  echo "=========================================="
-  echo "To connect: $(grep -o -E "tcp://(.+)" < .ngrok.log | sed "s/tcp:\/\//ssh $USER@/" | sed "s/:/ -p /")"
-  echo "or conenct with $(grep -o -E "tcp://(.+)" < .ngrok.log | sed "s/tcp:\/\//ssh (Your Linux Username)@/" | sed "s/:/ -p /")"
-  echo "=========================================="
-  echo "VMHOSTNAME $(hostname)"
-  echo "SSHADDR $(grep -o -E "tcp://(.+)" < .ngrok.log | sed "s/tcp:\/\///" | head -1)"
-  echo "SSHPORT $(grep -o -E "tcp://[^:]+:(.+)" < .ngrok.log | sed "s/tcp:\/\/[^:]*://" | head -1)"
-  echo "==="
-  # Also write to the workflow step summary so it's readable while the run is in progress
-  {
-    echo "## Temp VM connection"
-    echo ""
-    echo '```'
-    echo "ssh $USER@$(grep -o -E "tcp://(.+)" < .ngrok.log | sed "s/tcp:\/\///" | sed "s/:[0-9]*//" | head -1) -p $(grep -o -E "tcp://[^:]+:(.+)" < .ngrok.log | sed "s/tcp:\/\/[^:]*://" | head -1)"
-    echo '```'
-  } >> "$GITHUB_STEP_SUMMARY"
-else
-  echo "$HAS_ERRORS"
-  exit 4
+# Read the tunnel address from ngrok's local agent API (reliable, no log parsing)
+ADDR=$(curl -s http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[0].public_url // empty')
+if [[ -z "$ADDR" || "$ADDR" != tcp://* ]]; then
+  echo "ngrok agent API returned no tcp tunnel: '$ADDR'"
+  cat .ngrok.log | tail -20
+  exit 5
 fi
+SSH_HOST="${ADDR#tcp://}"; SSH_HOST="${SSH_HOST%%:*}"
+SSH_PORT="${ADDR##*:}"
+
+echo ""
+echo "=========================================="
+echo "To connect: ssh $LINUX_USERNAME@$SSH_HOST -p $SSH_PORT"
+echo "=========================================="
+
+# Visible while run is in progress
+echo "::notice title=Temp VM ready::ssh $LINUX_USERNAME@$SSH_HOST -p $SSH_PORT"
+{
+  echo "## Temp VM connection"
+  echo ""
+  echo '```'
+  echo "ssh $LINUX_USERNAME@$SSH_HOST -p $SSH_PORT"
+  echo '```'
+} >> "$GITHUB_STEP_SUMMARY"
+
+# Publish the address as a file in the repo so it is readable via API immediately
+PAYLOAD=$(jq -n --arg c "$(printf 'ssh %s@%s -p %s' "$LINUX_USERNAME" "$SSH_HOST" "$SSH_PORT" | base64 -w0)" '{message: "vm address", content: $c}')
+SHA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/$REPO/contents/tunnel.txt" | jq -r '.sha // empty')
+if [[ -n "$SHA" ]]; then
+  PAYLOAD=$(echo "$PAYLOAD" | jq --arg s "$SHA" '. + {sha: $s}')
+fi
+curl -s -X PUT \
+  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "Accept: application/vnd.github+json" \
+  -d "$PAYLOAD" \
+  "https://api.github.com/repos/$REPO/contents/tunnel.txt" | jq -r '.content.path // .message'
