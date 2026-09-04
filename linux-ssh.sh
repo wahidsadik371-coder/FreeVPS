@@ -1,69 +1,54 @@
-#linux-run.sh LINUX_USER_PASSWORD NGROK_AUTH_TOKEN LINUX_USERNAME LINUX_MACHINE_NAME
+#linux-run.sh — temp VM via tmate (no account, no card, no ngrok)
 #!/bin/bash
-# /home/runner/.ngrok2/ngrok.yml
+# Publishes the tmate SSH line to tunnel.txt in the repo via GITHUB_TOKEN
 
-sudo useradd -m $LINUX_USERNAME
-sudo adduser $LINUX_USERNAME sudo
-echo "$LINUX_USERNAME:$LINUX_USER_PASSWORD" | sudo chpasswd
-sed -i 's/\/bin\/sh/\/bin\/bash/g' /etc/passwd
-sudo hostname $LINUX_MACHINE_NAME
+set -u
 
-if [[ -z "$NGROK_AUTH_TOKEN" ]]; then
-  echo "Please set 'NGROK_AUTH_TOKEN'"
+if [[ -z "${GITHUB_TOKEN:-}" || -z "${REPO:-}" ]]; then
+  echo "GITHUB_TOKEN/REPO env missing"
   exit 2
 fi
 
-if [[ -z "$LINUX_USER_PASSWORD" ]]; then
-  echo "Please set 'LINUX_USER_PASSWORD' for user: $USER"
-  exit 3
-fi
+echo "### Install tmate ###"
+sudo apt-get update -qq
+sudo apt-get install -y -qq tmate
+command -v tmate >/dev/null || { echo "tmate install failed"; exit 3; }
 
-echo "### Install ngrok ###"
+echo "### Start tmate session ###"
+tmate new-session -d -s jarvis-vm
+tmate wait-tmate-ready 2>/dev/null || true
+sleep 5
 
-wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
-tar xzf ngrok-v3-stable-linux-amd64.tgz
-chmod +x ./ngrok
-[[ -x ./ngrok ]] || { echo "ngrok download/install failed"; exit 6; }
+echo "### tmate messages ###"
+tmate show-messages
 
-echo "### Update user: $USER password ###"
-echo -e "$LINUX_USER_PASSWORD\n$LINUX_USER_PASSWORD" | sudo passwd "$USER"
+SSH_LINE=$(tmate show-messages | grep "ssh session:" | awk '{print $3}' | head -1)
+WEB_LINE=$(tmate show-messages | grep "web session:" | awk '{print $3}' | head -1)
 
-echo "### Start ngrok proxy for 22 port ###"
-
-
-rm -f .ngrok.log
-./ngrok authtoken "$NGROK_AUTH_TOKEN"
-./ngrok tcp 22 --log ".ngrok.log" &
-
-sleep 15
-
-# Read the tunnel address from ngrok's local agent API (reliable, no log parsing)
-ADDR=$(curl -s http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[0].public_url // empty')
-if [[ -z "$ADDR" || "$ADDR" != tcp://* ]]; then
-  echo "ngrok agent API returned no tcp tunnel: '$ADDR'"
-  cat .ngrok.log | tail -20
+if [[ -z "$SSH_LINE" ]]; then
+  echo "no tmate ssh line found"
+  tmate show-messages
   exit 5
 fi
-SSH_HOST="${ADDR#tcp://}"; SSH_HOST="${SSH_HOST%%:*}"
-SSH_PORT="${ADDR##*:}"
 
 echo ""
 echo "=========================================="
-echo "To connect: ssh $LINUX_USERNAME@$SSH_HOST -p $SSH_PORT"
+echo "To connect: tmate show-messages said: $SSH_LINE"
+echo "Web terminal: $WEB_LINE"
 echo "=========================================="
 
-# Visible while run is in progress
-echo "::notice title=Temp VM ready::ssh $LINUX_USERNAME@$SSH_HOST -p $SSH_PORT"
+echo "::notice title=Temp VM ready::ssh $SSH_LINE"
 {
   echo "## Temp VM connection"
   echo ""
   echo '```'
-  echo "ssh $LINUX_USERNAME@$SSH_HOST -p $SSH_PORT"
+  echo "ssh $SSH_LINE"
+  echo "Web terminal: $WEB_LINE"
   echo '```'
 } >> "$GITHUB_STEP_SUMMARY"
 
-# Publish the address as a file in the repo so it is readable via API immediately
-PAYLOAD=$(jq -n --arg c "$(printf 'ssh %s@%s -p %s' "$LINUX_USERNAME" "$SSH_HOST" "$SSH_PORT" | base64 -w0)" '{message: "vm address", content: $c}')
+SSH_CMD="ssh $SSH_LINE"
+PAYLOAD=$(jq -n --arg c "$(printf '%s | web: %s' "$SSH_CMD" "${WEB_LINE:-none}" | base64 -w0)" '{message: "vm address", content: $c}')
 SHA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/$REPO/contents/tunnel.txt" | jq -r '.sha // empty')
 if [[ -n "$SHA" ]]; then
   PAYLOAD=$(echo "$PAYLOAD" | jq --arg s "$SHA" '. + {sha: $s}')
