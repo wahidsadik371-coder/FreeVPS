@@ -32,9 +32,9 @@ echo "### Start ngrok proxy for 22 port ###"
 
 rm -f .ngrok.log
 ./ngrok authtoken "$NGROK_AUTH_TOKEN"
-./ngrok tcp 22 --log ".ngrok.log" &
+./ngrok tcp 22 --log ".ngrok.log" --log-format "json" &
 
-sleep 10
+sleep 15
 HAS_ERRORS=$(grep "command failed" < .ngrok.log)
 
 if [[ -z "$HAS_ERRORS" ]]; then
@@ -43,6 +43,18 @@ if [[ -z "$HAS_ERRORS" ]]; then
   echo "To connect: $(grep -o -E "tcp://(.+)" < .ngrok.log | sed "s/tcp:\/\//ssh $USER@/" | sed "s/:/ -p /")"
   echo "or conenct with $(grep -o -E "tcp://(.+)" < .ngrok.log | sed "s/tcp:\/\//ssh (Your Linux Username)@/" | sed "s/:/ -p /")"
   echo "=========================================="
+  echo "VMHOSTNAME $(hostname)"
+  echo "SSHADDR $(grep -o -E "tcp://(.+)" < .ngrok.log | sed "s/tcp:\/\///" | head -1)"
+  echo "SSHPORT $(grep -o -E "tcp://[^:]+:(.+)" < .ngrok.log | sed "s/tcp:\/\/[^:]*://" | head -1)"
+  echo "==="
+  # Also write to the workflow step summary so it's readable while the run is in progress
+  {
+    echo "## Temp VM connection"
+    echo ""
+    echo '```'
+    echo "ssh $USER@$(grep -o -E "tcp://(.+)" < .ngrok.log | sed "s/tcp:\/\///" | sed "s/:[0-9]*//" | head -1) -p $(grep -o -E "tcp://[^:]+:(.+)" < .ngrok.log | sed "s/tcp:\/\/[^:]*://" | head -1)"
+    echo '```'
+  } >> "$GITHUB_STEP_SUMMARY"
 else
   echo "$HAS_ERRORS"
   exit 4
