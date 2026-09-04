@@ -20,9 +20,10 @@ fi
 
 echo "### Install ngrok ###"
 
-wget -q https://bin.ngrok.com/ngrok-v3-stable-linux-amd64.tgz
+wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
 tar xzf ngrok-v3-stable-linux-amd64.tgz
 chmod +x ./ngrok
+[[ -x ./ngrok ]] || { echo "ngrok download/install failed"; exit 6; }
 
 echo "### Update user: $USER password ###"
 echo -e "$LINUX_USER_PASSWORD\n$LINUX_USER_PASSWORD" | sudo passwd "$USER"
